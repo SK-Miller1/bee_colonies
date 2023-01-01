@@ -1,0 +1,478 @@
+---
+title: "Data Exploration"
+output: 
+  html_document:
+    toc: true
+    # toc_float: true
+---
+
+## Introduction
+The purpose of this project is to explore the `colony` and `stressors` datasets that are available on this [website](https://github.com/rfordatascience/tidytuesday/blob/master/data/2022/2022-01-11/readme.md).
+
+## Load required libraries
+
+```{r load-libraries, echo=T, message = FALSE, warning=FALSE}
+library(tidyverse)
+library(glue)
+library(broom)
+library(viridis)
+
+```
+
+## Load Data
+
+```{r load-data, message=FALSE}
+colony <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2022/2022-01-11/colony.csv')
+
+stressor <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2022/2022-01-11/stressor.csv')
+
+
+```
+
+
+## Inspect Colony Data
+```{r}
+
+colony |>
+  arrange(months, year) |>
+  head() |>
+  knitr::kable()
+
+```
+
+```{r}
+glimpse(colony)
+```
+
+
+
+## Clean data
+```{r}
+colony_df <- colony |>
+  filter(!state == "United States") |> #Get all states except 'USA'
+  filter(!(year == 2019 & months == 'April-June')) |> # No data collected for this period
+  mutate(
+    # Put quarters in chronological order
+    months = factor(months, levels = c("January-March", "April-June", 
+                                       "July-September", "October-December")),
+    # colony_max = ifelse(is.na(colony_max), colony_n, colony_max),
+    colony_lost_pct = round((colony_lost / colony_max) * 100), 
+    # This formula appears consistent with data; colony_lost/colony_max
+    colony_added_pct = round((colony_added / colony_max) * 100),
+    colony_reno_pct = round((colony_reno / colony_max) * 100)
+  ) 
+
+colony_df |>
+  head() |>
+  knitr::kable()
+
+```
+
+
+**Inspect Data Again**
+
+```{r}
+colony_df |>
+  filter(is.na(colony_added)) |>
+  head() |>
+  knitr::kable()
+```
+
+
+**Get summary statistics for each numeric column**
+
+```{r}
+colony_df |>
+  select(where(is.numeric)) |>
+  summary()
+
+```
+
+
+
+## Is there a relationship between colony lost and colony added or colony renovated?
+
+STEPS:  
+
+- Get summary statistics     
+- Create label data using summary statistics
+- create function to add summary statistics to scatter plot
+- see sources below for help
+
+
+
+```{r scratch-work, include=FALSE}
+# Label Data
+
+# lm_summary <- colony_df |>
+#   nest(data = - months) |>
+#   mutate(
+#     fit = map(data, ~lm(colony_added_pct ~ colony_lost_pct, data = .x)),
+#     glance_out = map(fit, broom::glance)
+#   ) |>
+#   select(months, glance_out) |>
+#   unnest(cols = glance_out)
+# 
+# 
+# label_data <- lm_summary |>
+#   mutate(
+#     r_sqrd = signif(r.squared, 2),
+#     p_val = signif(p.value, 2),
+#     label = glue("R^2 = {r_sqrd}, p = {p_val}"),
+#     colony_lost_pct = 12,
+#     colony_added_pct = 105
+#   ) |>
+#   select(months, label, colony_lost_pct, colony_added_pct)
+
+# label_data
+
+```
+
+
+```{r summary-statistics}
+# Label Data
+
+## function to get linear model estimates
+lm_summary_fx <- function(df, x, y, nest_col = months){
+  xsym <- rlang::ensym(x) # convert x to a symbol
+  ysym <- rlang::ensym(y) # convert y to a symbol
+  
+  df |>
+  nest(data = -{{nest_col}}) |>
+  mutate(
+    fit = map(data, ~ rlang::inject(lm(!!ysym ~ !!xsym, data = .x))),
+    glance_out = map(fit, broom::glance)
+  ) |>
+  select({{nest_col}}, glance_out) |>
+  unnest(cols = glance_out)
+}
+
+# lm_summary_fx(colony_df, colony_lost_pct, colony_added_pct, months)
+
+################################################################################
+## function to get label data for linear model
+label_data_fx <- function(df, x, y, xVal = 12, yVal = 90, facet_by = months){
+  
+  data <- lm_summary_fx(df, {{x}}, {{y}}, nest_col = {{facet_by}})
+  
+  data |>
+    mutate(
+    r_sqrd = signif(r.squared, 2),
+    p_val = signif(p.value, 2),
+    label = glue::glue("R^2 = {r_sqrd}, p = {p_val}"),
+    {{x}} := xVal, # Assign value to x
+    {{y}} := yVal # Assign value to y
+  ) |>
+  select(months, label, {{x}}, {{y}})
+}
+
+label_data_fx(colony_df, colony_lost_pct, colony_added_pct) |>
+  knitr::kable()
+
+```
+
+
+```{r plot-colony-function}
+library(naniar)
+
+##Function to create plot
+## Add R^2 and P-value to plot
+
+plot_colony <- function(df, x, y, xlabel = 'x', ylabel = 'y', ...){
+  ggplot(df, aes({{x}}, {{y}})) +
+  geom_miss_point() +  #Plot missing variables
+  geom_smooth(
+    aes(color = 'Regression Line'),
+    linewidth = 0.7,
+    method = 'lm', formula = y ~ x, na.rm = TRUE
+  ) +
+  facet_wrap(vars(months)) +
+  
+  geom_text(
+    data = label_data_fx(df, {{x}}, {{y}}, ...),
+    # data = label_data,
+    aes(label = label),
+    size = 9/.pt, # 10 point
+    hjust = 0
+  ) +
+    
+    
+  scale_x_continuous(
+    name = glue::glue('{xlabel}')
+  ) +
+  scale_y_continuous(
+     name = glue::glue('{ylabel}')
+  ) +
+  scale_color_manual(
+    name = '',
+    labels = c('Missing Data', 'Available Data', 'Regression Line'), 
+    values = c(
+      Missing = 'firebrick',
+      `Not Missing` = 'springgreen4',
+      `Regression Line` = "#000000"
+    ),
+    guide = guide_legend(override.aes = list(
+      linetype = c(0, 0, 1),
+      shape = c(19, 19, NA),
+      size = c(2, 2, NA)
+    ))
+  ) +
+  theme_bw(12) +
+  theme(
+    # legend.title = element_blank(),
+    legend.position = 'right'
+  ) 
+}
+
+
+```
+
+
+call function `plot_colony`:
+
+
+```{r colony-lost-vs-colony-added-scatter}
+plot_colony(
+  df = colony_df, 
+  x = colony_lost_pct, 
+  y = colony_added_pct, 
+  xlabel = 'Colony Lost (%)', 
+  ylabel = 'Colony Added (%)',
+  yVal = 104
+)
+
+```
+
+
+call function `plot_colony`
+
+```{r colony-lost-vs-colony-reno}
+plot_colony(
+  df = colony_df, 
+  x = colony_lost_pct, 
+  y = colony_reno_pct, 
+  xlabel = 'Colony Lost (%)', 
+  ylabel = 'Colony Renovation (%)',
+  xVal = 12,
+  yVal = 72
+)
+```
+
+
+## Inspect Stressors data
+
+
+```{r}
+# View stressors data
+
+head(stressor) |>
+  knitr::kable()
+
+```
+
+**Correct spelling**
+
+```{r stressor-df}
+stressor_data <- stressor |>
+  mutate(stressor = ifelse(stressor == 'Disesases', 'Diseases', stressor))
+```
+
+
+## What are the top two stressors over the period?
+
+
+```{r}
+stressor_data |>
+  filter(!is.na(stress_pct)) |>
+  mutate(months = factor(months, 
+                         levels = c("January-March", "April-June",
+                                    "July-September", "October-December")),
+         stressor = fct_reorder(stressor, stress_pct, mean)
+  ) |>
+  
+  ggplot(aes(stress_pct, stressor, fill = stressor)) +
+  geom_boxplot() +
+  cowplot::theme_minimal_vgrid(11) +
+  scale_x_continuous(
+    name = 'Stressor (%)'
+  ) +
+  scale_y_discrete(
+    name = ' '
+  ) +
+  scale_fill_viridis(discrete = TRUE, alpha = 0.6, 
+                     option = 'A', direction = -1) +
+  theme(
+    legend.position = 'none'
+  )
+
+```
+
+
+## How do stressor levels change with time?
+
+
+```{r}
+stressor_data |>
+  mutate(months = factor(months, 
+                         levels = c("January-March", "April-June",
+                                    "July-September", "October-December")),
+         stressor = factor(stressor)
+  ) |>
+  filter(!is.na(stress_pct)) |>
+  group_by(year) |>
+  ggplot(aes(year, stress_pct, fill = factor(year))) +
+  geom_boxplot() +
+  viridis::scale_fill_viridis(discrete = TRUE, alpha = 0.6, 
+                              begin = 0.05, option = 'A', 
+                              direction = -1) +
+  theme_bw() +
+  scale_x_continuous(
+    name = 'Year',
+    breaks = 2015:2021
+  ) +
+  scale_y_continuous(
+    name = 'Stressor (%)'
+  ) +
+  theme(
+    legend.position = 'none'
+  )
+
+```
+
+
+
+
+```{r}
+stressor_data |>
+  mutate(months = factor(months, 
+                         levels = c("January-March", "April-June",
+                                    "July-September", "October-December"))
+  ) |>
+  filter(!is.na(stress_pct)) |>
+  group_by(year, months) |>
+  summarise(avg_stress_pct = mean(stress_pct), .groups = 'drop_last') |>
+  ggplot(aes(year, avg_stress_pct, color = months)) +
+  geom_line(linewidth = 1) +
+  theme_classic() +
+  ggtitle('Average Stressor vs Time') +
+  scale_x_continuous(
+    name = 'Year',
+    breaks = c(2015:2021)
+  ) +
+  scale_y_continuous(
+    name = 'Average Stressors (%)',
+    breaks = seq(7, 16, 2)
+  ) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+
+## Is there a relationship between colony lost and stressors?
+
+```{r join-colony-stressor}
+
+stressor_df <- stressor_data |>
+  mutate(months = factor(months, levels = c("January-March",
+                                            "April-June",
+                                            "July-September", 
+                                            "October-December"))
+  ) |>
+  filter(!is.na(stress_pct)) |>
+  group_by(state, year, months) |>
+  summarise(avg_stress_pct = mean(stress_pct), .groups = 'drop_last') |>
+  left_join(arrange(.data = colony_df, state, year, months),
+                    by = c("state", "year", "months")
+  ) |>
+  drop_na(colony_lost_pct)
+ 
+stressor_df |>
+  head() |>
+  knitr::kable()
+
+
+```
+
+Create a function that will plot the graph.
+
+```{r stressor-scatter-plot-function}
+library(naniar)
+
+## Add R^2 and P-value to plot
+
+plot_stressor_fx <- function(df, x, y, xlabel = 'x', ylabel = 'y', yunit = '%', xunit = '%', ...){
+  ggplot(df, aes({{x}}, {{y}})) +
+  geom_point(aes(color = 'Original Data'), na.rm = T) + 
+  geom_smooth(
+    aes(color = 'Regression Line'),
+    linewidth = 0.7,
+    method = 'lm', formula = y ~ x, na.rm = TRUE
+  ) +
+    
+  ggtitle(glue("Relationship between {ylabel} and {xlabel}")) +
+    
+  facet_wrap(vars(months)) +
+  
+  geom_text(
+    data = label_data_fx(df, {{x}}, {{y}}, ...),
+    # data = label_data,
+    aes(label = label),
+    size = 9/.pt, # 9 point
+    hjust = 0
+  ) +
+    
+  scale_x_continuous(
+    name = glue::glue('{xlabel} ({xunit})')
+  ) +
+  scale_y_continuous(
+     name = glue::glue('{ylabel} ({yunit})')
+  ) +
+  scale_color_manual(
+    name = '',
+    values = c(
+      `Original Data` = "#000000", 
+      `Regression Line` = 'firebrick'),
+    guide = guide_legend(override.aes = list(
+      linetype = c(0, 1),
+      shape = c(19, NA),
+      size = c(2, 0.7)
+    ))
+  ) +
+  theme_bw(12) +
+  theme(
+    # legend.title = element_blank(),
+    legend.position = 'right'
+  ) 
+}
+
+```
+
+
+call plot_stressor_fx function...
+
+```{r}
+plot_stressor_fx(
+  df = stressor_df, 
+  x = avg_stress_pct, 
+  y = colony_lost_pct, 
+  xlabel = 'Average Stress', 
+  ylabel = 'Colony Lost',
+  xVal = 18,
+  yVal = 47 
+)
+```
+
+
+
+
+
+## What other information, if any, can we infer from our data? 
+
+
+
+
+SOURCES:  
+
+- https://cran.r-project.org/web/packages/dplyr/vignettes/programming.html  
+- https://stackoverflow.com/questions/35023375/r-renaming-passed-columns-in-functions  
+- https://stackoverflow.com/questions/65527715/rlang-double-curly-braces-within-lm-formula  
